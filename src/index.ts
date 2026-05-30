@@ -91,32 +91,42 @@ function buildUpstreamHeaders(incoming: Headers): Headers {
   return out;
 }
 
-function buildDownstreamHeaders(upstream: Headers, originalUrl: string): Headers {
+function buildDownstreamHeaders(upstream: Headers, originalUrl: string, finalUrl: string): Headers {
   const out = new Headers();
   for (const h of DOWNSTREAM_FORWARD_HEADERS) {
     const v = upstream.get(h);
     if (v) out.set(h, v);
   }
 
-  // If upstream didn't set Content-Disposition, derive the filename from the
-  // original URL so the browser saves the file with the correct name instead
-  // of "dl" (the proxy path segment).
-  if (!out.has('content-disposition')) {
-    try {
-      const pathname = new URL(originalUrl).pathname;
-      const filename = pathname.split('/').filter(Boolean).pop();
-      if (filename) {
-        // Use RFC 5987 encoding for non-ASCII filenames
-        const safe = filename.replace(/["\\]/g, '_');
+  // Fix Content-Disposition when upstream omits the filename (or sets
+  // "attachment" with no filename= parameter). Browsers would otherwise
+  // save the file as "dl" (the proxy path segment).
+  const cd = out.get('content-disposition') ?? '';
+  const hasFilename = /filename\s*=/i.test(cd);
+  if (!hasFilename) {
+    const filename = extractFilename(finalUrl) ?? extractFilename(originalUrl);
+    if (filename) {
+      const safe = filename.replace(/["\\]/g, '_');
+      if (cd) {
+        // Append filename to existing "attachment" directive
+        out.set('Content-Disposition', `${cd}; filename="${safe}"`);
+      } else {
         out.set('Content-Disposition', `attachment; filename="${safe}"`);
       }
-    } catch {
-      // ignore — no Content-Disposition is fine
     }
   }
 
   out.set('Access-Control-Allow-Origin', '*');
   return out;
+}
+
+function extractFilename(url: string): string | null {
+  try {
+    const pathname = new URL(url).pathname;
+    return pathname.split('/').filter(Boolean).pop() ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Proxy handler ──────────────────────────────────────────────────────────
@@ -149,7 +159,7 @@ async function handleProxy(token: string, request: Request): Promise<Response> {
 
   return new Response(request.method === 'HEAD' ? null : upstream.body, {
     status: upstream.status,
-    headers: buildDownstreamHeaders(upstream.headers, decoded.url),
+    headers: buildDownstreamHeaders(upstream.headers, decoded.url, upstream.url),
   });
 }
 
