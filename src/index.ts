@@ -91,12 +91,30 @@ function buildUpstreamHeaders(incoming: Headers): Headers {
   return out;
 }
 
-function buildDownstreamHeaders(upstream: Headers): Headers {
+function buildDownstreamHeaders(upstream: Headers, originalUrl: string): Headers {
   const out = new Headers();
   for (const h of DOWNSTREAM_FORWARD_HEADERS) {
     const v = upstream.get(h);
     if (v) out.set(h, v);
   }
+
+  // If upstream didn't set Content-Disposition, derive the filename from the
+  // original URL so the browser saves the file with the correct name instead
+  // of "dl" (the proxy path segment).
+  if (!out.has('content-disposition')) {
+    try {
+      const pathname = new URL(originalUrl).pathname;
+      const filename = pathname.split('/').filter(Boolean).pop();
+      if (filename) {
+        // Use RFC 5987 encoding for non-ASCII filenames
+        const safe = filename.replace(/["\\]/g, '_');
+        out.set('Content-Disposition', `attachment; filename="${safe}"`);
+      }
+    } catch {
+      // ignore — no Content-Disposition is fine
+    }
+  }
+
   out.set('Access-Control-Allow-Origin', '*');
   return out;
 }
@@ -131,7 +149,7 @@ async function handleProxy(token: string, request: Request): Promise<Response> {
 
   return new Response(request.method === 'HEAD' ? null : upstream.body, {
     status: upstream.status,
-    headers: buildDownstreamHeaders(upstream.headers),
+    headers: buildDownstreamHeaders(upstream.headers, decoded.url),
   });
 }
 
